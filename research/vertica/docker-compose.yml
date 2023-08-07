@@ -1,0 +1,14 @@
+version: '3'
+
+services:
+  vertica:
+    image: jbfavre/vertica:latest
+    ports:
+      - 5433:5433
+    environment:
+      - VERTICA_DATABASE=mydb
+      - VERTICA_USER=dbadmin
+      - VERTICA_PASSWORD=mysecretpassword
+      - VERTICA_LICENSE=accept
+    volumes:
+      - ./data:/home/dbadmin/docker

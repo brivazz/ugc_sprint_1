@@ -1,0 +1,151 @@
+version: '3'
+
+x-base: &base
+    env_file:
+        - .env
+
+
+networks:
+  practicumAPI:
+    external: true
+
+services:
+  nginx:
+    image: nginx:latest
+    container_name: 'nginx'
+    networks:
+      - practicumAPI
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/configs:/etc/nginx/templates:ro
+      - ./nginx/logs:/etc/nginx/logs
+    environment:
+      NGINX_ENVSUBST_TEMPLATE_SUFFIX: ".template"
+      NGINX_SET_REAL_IP_FROM: 192.168.1.0/24
+      UGC_API_PORT: ${UGC_API_PORT}
+      AUTH_PORT: ${AUTH_PORT}
+    depends_on:
+      - kafka_api
+    ports:
+      - ${NGINX_PORT}:80
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: zookeeper
+    hostname: zookeeper
+    networks:
+      - practicumAPI
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD-SHELL", "zookeeper-shell localhost:2181 ls /"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: kafka
+    hostname: kafka
+    networks:
+      - practicumAPI
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    expose:
+      - ${KAFKA_PORT}
+      - ${KAFKA_PORT_2}
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --list --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  clickhouse-node1:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse-node1
+    hostname: clickhouse-node1
+    networks:
+      - practicumAPI
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    expose:
+      - ${CLICKHOUSE_PORT}
+      - ${CLICKHOUSE_PORT_2}
+    volumes:
+      - ./clickhouse/node1:/etc/clickhouse-server
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  oltp_olap_etl:
+    build: kafka_to_clickhouse
+    container_name: oltp_olap_etl
+    restart: unless-stopped
+    networks:
+      - practicumAPI
+    depends_on:
+      kafka:
+        condition: service_healthy
+      clickhouse-node1:
+        condition: service_healthy
+    env_file:
+      - .env
+
+  redis:
+    image: redis
+    container_name: 'redis_cache'
+    restart: unless-stopped
+    networks:
+      - practicumAPI
+    volumes:
+      - ./redis/data:/data
+    expose:
+      - ${REDIS_PORT}
+
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  kafka_api:
+    build:
+      context: kafka_api
+    container_name: 'kafka_api'
+    networks:
+      - practicumAPI
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    expose:
+      - ${UGC_API_HOST}
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui
+    container_name: kafka-ui
+    networks:
+      - practicumAPI
+    ports:
+      - ${KAFKA_UI_PORT}:${KAFKA_UI_PORT}
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=local
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:29092
+      - KAFKA_CLUSTERS_0_ZOOKEEPER=zookeeper:2181
+    links:
+      - kafka
+      - zookeeper
